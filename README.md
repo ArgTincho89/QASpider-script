@@ -269,4 +269,4 @@ for page in result["pages"]:
 
 ## License
 
-No license declared. Add one before redistributing.
+[MIT](LICENSE). Use it, modify it, ship it commercially, just keep the notice.
