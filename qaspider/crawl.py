@@ -455,6 +455,33 @@ def _discover_sitemap_pages(
     return page_urls, issues
 
 
+def build_element_index(pages: list[dict]) -> dict[str, list[str]]:
+    """Map every element seen on at least one page to the URLs it was found on.
+
+    The index exists so a consumer can answer "where are the images" with one
+    lookup instead of walking every page record. Three rules keep it honest:
+
+    - Only elements that were ``true`` somewhere are present. The existence of a
+      key is therefore proof the element exists somewhere in the crawl, which is
+      what makes the index safe to read without cross-checking ``pages``.
+    - Pages without ``elements`` (the ``agent-check`` records) contribute
+      nothing. The index answers "where was this seen", not "where was it
+      missing", so an un-inventoried page is never listed under any key.
+    - Keys and URLs are sorted so two runs over the same pages produce byte
+      identical output, which keeps the report diffable.
+    """
+    found: dict[str, set[str]] = {}
+    for page in pages:
+        elements = page.get("elements")
+        url = page.get("url")
+        if not isinstance(elements, dict) or not isinstance(url, str):
+            continue
+        for key, present in elements.items():
+            if present:
+                found.setdefault(key, set()).add(url)
+    return {key: sorted(urls) for key, urls in sorted(found.items())}
+
+
 def crawl_site(
     start_url: str,
     *,
@@ -468,6 +495,10 @@ def crawl_site(
     queue until it is exhausted. Pages that cannot be inventoried are represented
     as records with ``action: agent-check`` and no ``elements`` field. Navigable
     links may still be discovered from rendered non-2xx response documents.
+
+    The returned report ends with ``elementUrls``, a reverse index mapping each
+    element that was present on at least one page to the URLs it was found on,
+    so a consumer can locate a single element without walking ``pages``.
 
     Losing the browser is survivable: the page in flight becomes an
     ``agent-check`` record, the browser is relaunched up to
@@ -743,6 +774,10 @@ def crawl_site(
                         "stopReason": stop_reason,
                         "teardownFailures": 0,
                     },
+                    # Last on purpose: it is derived from `pages`, so a consumer
+                    # that only needs a lookup never has to page through the
+                    # records above.
+                    "elementUrls": build_element_index(pages),
                 }
             finally:
                 teardown_failures += session.close()

@@ -22,6 +22,7 @@ from qaspider.crawl import (
     MAX_DOCUMENT_BYTES,
     STOP_BROWSER_RECOVERY_BUDGET,
     _playwright_driver,
+    build_element_index,
     crawl_site,
 )
 from qaspider.inventory import CANONICAL_INVENTORY_KEYS, INVENTORY_KEYS, empty_inventory
@@ -1283,6 +1284,99 @@ class NestingDepthTests(unittest.TestCase):
         self.assertEqual(stats["depthSuppressed"], 1)
         self.assertTrue(stats["truncated"])
         self.assertFalse(stats["complete"])
+
+
+class ElementIndexTests(unittest.TestCase):
+    """`elementUrls` is the reverse lookup: element key -> URLs where it was true."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.server = ThreadingHTTPServer(("127.0.0.1", 0), FixtureHandler)
+        cls.thread = threading.Thread(target=cls.server.serve_forever, daemon=True)
+        cls.thread.start()
+        cls.start_url = f"http://127.0.0.1:{cls.server.server_port}/"
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.server.shutdown()
+        cls.thread.join()
+
+    def test_only_elements_true_somewhere_are_indexed(self):
+        pages = [
+            {"url": "https://a.test/1", "elements": {"images": True, "canvas": False}},
+            {"url": "https://a.test/2", "elements": {"images": False, "canvas": True}},
+        ]
+
+        index = build_element_index(pages)
+
+        self.assertEqual(index, {"canvas": ["https://a.test/2"], "images": ["https://a.test/1"]})
+
+    def test_element_present_on_many_pages_lists_every_url_once(self):
+        pages = [
+            {"url": f"https://a.test/{n}", "elements": {"images": True}}
+            for n in (3, 1, 2)
+        ]
+
+        self.assertEqual(build_element_index(pages), {"images": ["https://a.test/1", "https://a.test/2", "https://a.test/3"]})
+
+    def test_agent_check_pages_are_never_listed(self):
+        pages = [
+            {"url": "https://a.test/ok", "elements": {"images": True}},
+            {"url": "https://a.test/broken", "statusCode": 404, "action": "agent-check", "error": "HTTP 404"},
+        ]
+
+        index = build_element_index(pages)
+
+        self.assertEqual(index, {"images": ["https://a.test/ok"]})
+        self.assertNotIn("https://a.test/broken", index["images"])
+
+    def test_empty_crawl_yields_an_empty_index(self):
+        self.assertEqual(build_element_index([]), {})
+        self.assertEqual(
+            build_element_index([{"url": "https://a.test/x", "action": "agent-check", "error": "HTTP 500"}]),
+            {},
+        )
+
+    def test_output_is_sorted_and_deterministic_regardless_of_input_order(self):
+        forward = [
+            {"url": "https://a.test/1", "elements": {"video": True, "aria": True}},
+            {"url": "https://a.test/2", "elements": {"aria": True}},
+        ]
+        backward = list(reversed(forward))
+
+        self.assertEqual(build_element_index(forward), build_element_index(backward))
+        self.assertEqual(list(build_element_index(forward)), ["aria", "video"])
+
+    def test_falsy_values_other_than_false_are_not_indexed(self):
+        # A missing or null value is not evidence of presence, so it must not
+        # create a key. Only a real True does.
+        pages = [{"url": "https://a.test/1", "elements": {"images": None, "video": "", "canvas": True}}]
+
+        self.assertEqual(build_element_index(pages), {"canvas": ["https://a.test/1"]})
+
+    def test_crawl_report_ends_with_the_index(self):
+        result = crawl_site(self.start_url, max_pages=1, max_depth=0, timeout_ms=15_000)
+
+        self.assertEqual(list(result)[-1], "elementUrls")
+        index = result["elementUrls"]
+        self.assertTrue(index, "an inventoried page must index at least one element")
+        inventoried = {p["url"] for p in result["pages"] if "elements" in p}
+        for key, urls in index.items():
+            self.assertIn(key, INVENTORY_KEYS)
+            self.assertEqual(urls, sorted(urls), f"{key} must be sorted")
+            self.assertTrue(urls, f"{key} must never map to an empty URL list")
+            # The core guarantee: the index only ever points at real, inventoried
+            # pages, and only where the element was actually true.
+            self.assertTrue(set(urls) <= inventoried, f"{key} listed a non-inventoried URL")
+        by_url = {p["url"]: p["elements"] for p in result["pages"] if "elements" in p}
+        for key, urls in index.items():
+            for url in urls:
+                self.assertTrue(by_url[url][key], f"{key} indexed at {url} where it was false")
+        # An element false on every inventoried page must not appear at all.
+        ever_true = {
+            key for elements in by_url.values() for key, value in elements.items() if value
+        }
+        self.assertEqual(set(index), ever_true)
 
 
 if __name__ == "__main__":

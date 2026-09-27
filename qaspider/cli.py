@@ -94,6 +94,7 @@ def _failure_report(url: str, max_pages: int | None, max_depth: int | None) -> d
             "stopReason": "crawler-failed",
             "teardownFailures": 0,
         },
+        "elementUrls": {},
     }
 
 

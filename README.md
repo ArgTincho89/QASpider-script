@@ -143,7 +143,8 @@ So `depthSuppressed` is a frontier count, not a count of everything below it. If
 {
   "startUrl": "https://www.example.com/",
   "pages": [ ... ],
-  "stats": { ... }
+  "stats": { ... },
+  "elementUrls": { ... }
 }
 ```
 
@@ -225,6 +226,45 @@ The set of possible reasons is closed and readable: `HTTP <code>`, `off-origin r
 
 ---
 
+## `elementUrls`: find an element without reading every page
+
+The last section of the report is a reverse index. Instead of walking `pages` to answer "where are the images", read one key:
+
+```json
+"elementUrls": {
+  "images": [
+    "https://www.example.com/",
+    "https://www.example.com/en"
+  ],
+  "h1": [
+    "https://www.example.com/"
+  ]
+}
+```
+
+| Rule | Behaviour |
+| --- | --- |
+| Only elements that were `true` somewhere get a key. | If `"canvas"` is absent, `canvas` was false on every inventoried page. The key's presence is itself the evidence. |
+| `agent-check` pages never appear. | The index answers "where was this seen", not "where was it missing". An un-inventoried page is not listed under anything. |
+| URLs are sorted, and so are the keys. | Two runs over the same pages produce byte-identical output, so reports diff cleanly. |
+| No empty lists. | A key always has at least one URL. |
+
+From a report you can go straight to the answer:
+
+```python
+import json
+
+report = json.load(open("inventory.json", encoding="utf-8"))
+index = report["elementUrls"]
+
+for url in index.get("images", []):
+    print("has images:", url)
+```
+
+On a real 3-page run this section held 16 of the 66 keys; the other 50 were `false` everywhere and therefore absent, which is why the section stays small even when the site is large.
+
+---
+
 ## The 66 categories
 
 **Links and navigation:** `links`, `internalLinks`, `externalLinks`, `navigation`
@@ -295,7 +335,7 @@ QASpider-script/
 │   ├── inventory.py      # the 66 categories
 │   └── urls.py           # normalization and scope comparison
 ├── tests/
-│   └── test_crawler.py   # 44 tests
+│   └── test_crawler.py   # 51 tests
 ├── requirements.txt
 └── .gitignore
 ```
@@ -306,7 +346,7 @@ QASpider-script/
 python -m unittest discover -s tests
 ```
 
-All 44 tests run against a local server and never touch a public site.
+All 51 tests run against a local server and never touch a public site.
 
 ## Use as a library
 
