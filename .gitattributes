@@ -1,0 +1,17 @@
+# Normalize line endings so the repository behaves the same on Windows, Linux, and macOS.
+* text=auto eol=lf
+
+*.py text eol=lf
+*.md text eol=lf
+*.txt text eol=lf
+*.json text eol=lf
+
+# Windows images are binary and must never be rewritten.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.exe binary
+*.pdf binary
+*.xlsx binary
