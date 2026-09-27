@@ -517,6 +517,28 @@ class CrawlerCliTests(unittest.TestCase):
         self.assertIsNone(args.max_pages)
         self.assertIsNone(args.max_depth)
 
+    def test_depth_flag_sets_the_depth_bound(self):
+        args = build_parser().parse_args(["http://example.test/", "--depth", "2"])
+
+        self.assertEqual(args.max_depth, 2)
+
+    def test_max_depth_remains_accepted_as_an_alias(self):
+        args = build_parser().parse_args(["http://example.test/", "--max-depth", "3"])
+
+        self.assertEqual(args.max_depth, 3)
+
+    def test_last_depth_spelling_wins_when_both_are_given(self):
+        args = build_parser().parse_args(
+            ["http://example.test/", "--depth", "5", "--max-depth", "1"]
+        )
+
+        self.assertEqual(args.max_depth, 1)
+
+    def test_depth_rejects_negative_values(self):
+        with self.assertRaises(SystemExit):
+            with contextlib.redirect_stderr(io.StringIO()):
+                build_parser().parse_args(["http://example.test/", "--depth", "-1"])
+
     def test_main_writes_json_and_succeeds_with_minimal_stats(self):
         result = {
             "startUrl": "https://example.test/",
@@ -1146,6 +1168,121 @@ class CrawlerTests(unittest.TestCase):
         self.assertTrue(page["elements"]["video"])
         self.assertTrue(page["elements"]["audio"])
         self.assertTrue(page["elements"]["images"])
+
+
+class NestedTreeHandler(BaseHTTPRequestHandler):
+    """Serves a fixed nesting chain: / > /n1 > /n1/n2 > /n1/n2/n3 > /n1/n2/n3/n4.
+
+    Child links are absolute and the parent-to-children map is explicit on
+    purpose: relative hrefs would make the depth semantics depend on trailing
+    slashes, and deriving children from slash counts invites off-by-one errors.
+    """
+
+    CHILDREN = {
+        "/": ["/n1"],
+        "/n1": ["/n1/n2"],
+        "/n1/n2": ["/n1/n2/n3"],
+        "/n1/n2/n3": ["/n1/n2/n3/n4"],
+        "/n1/n2/n3/n4": [],
+    }
+
+    def do_GET(self):
+        path = self.path.split("?")[0].rstrip("/") or "/"
+        if path == "/robots.txt" or path == "/sitemap.xml":
+            self.send_response(404)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
+        if path in self.CHILDREN:
+            links = "".join(
+                f'<a href="{child}">link</a>' for child in self.CHILDREN[path]
+            )
+            body = (
+                f"<html><head><title>depth</title></head>"
+                f"<body><main><h1>{path}</h1>{links}</main></body></html>"
+            ).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
+        self.send_response(404)
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
+    def log_message(self, *args):
+        pass
+
+
+class NestingDepthTests(unittest.TestCase):
+    """`--depth N` means N path segments below the start URL, not from the root."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.server = ThreadingHTTPServer(("127.0.0.1", 0), NestedTreeHandler)
+        cls.thread = threading.Thread(target=cls.server.serve_forever, daemon=True)
+        cls.thread.start()
+        cls.origin = f"http://127.0.0.1:{cls.server.server_port}"
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.server.shutdown()
+        cls.thread.join()
+
+    def _crawled_paths(self, start_path, **kwargs):
+        result = crawl_site(f"{self.origin}{start_path}", timeout_ms=15_000, **kwargs)
+        paths = sorted(
+            page["url"][len(self.origin) :] or "/" for page in result["pages"]
+        )
+        return paths, result["stats"]
+
+    def test_depth_counts_segments_below_the_start_url(self):
+        cases = {
+            0: ["/"],
+            1: ["/", "/n1"],
+            2: ["/", "/n1", "/n1/n2"],
+            3: ["/", "/n1", "/n1/n2", "/n1/n2/n3"],
+            4: ["/", "/n1", "/n1/n2", "/n1/n2/n3", "/n1/n2/n3/n4"],
+        }
+        for depth, expected in cases.items():
+            with self.subTest(depth=depth):
+                paths, _ = self._crawled_paths("/", max_depth=depth)
+                self.assertEqual(paths, expected)
+
+    def test_depth_is_relative_to_a_base_url_that_itself_has_a_path(self):
+        start = "/n1"
+
+        paths, _ = self._crawled_paths(start, max_depth=1)
+        self.assertEqual(paths, ["/n1", "/n1/n2"])
+
+        paths, _ = self._crawled_paths(start, max_depth=2)
+        self.assertEqual(paths, ["/n1", "/n1/n2", "/n1/n2/n3"])
+
+    def test_omitting_depth_follows_every_discovered_link(self):
+        paths, stats = self._crawled_paths("/")
+
+        self.assertEqual(
+            paths, ["/", "/n1", "/n1/n2", "/n1/n2/n3", "/n1/n2/n3/n4"]
+        )
+        self.assertIsNone(stats["maxDepth"])
+        self.assertEqual(stats["depthSuppressed"], 0)
+        self.assertTrue(stats["complete"])
+        self.assertFalse(stats["truncated"])
+
+    def test_depth_limit_reports_suppressed_and_truncated_state(self):
+        paths, stats = self._crawled_paths("/", max_depth=2)
+
+        self.assertEqual(paths, ["/", "/n1", "/n1/n2"])
+        self.assertEqual(stats["maxDepth"], 2)
+        self.assertEqual(stats["pending"], 0)
+        # Suppression is a frontier, not a whole subtree: /n1/n2/n3 is rejected at
+        # depth 3, so it is never crawled and its own child /n1/n2/n3/n4 is never
+        # discovered at all. Only the boundary counts as suppressed.
+        self.assertEqual(stats["discovered"], 4)
+        self.assertEqual(stats["depthSuppressed"], 1)
+        self.assertTrue(stats["truncated"])
+        self.assertFalse(stats["complete"])
 
 
 if __name__ == "__main__":

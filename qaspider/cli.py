@@ -35,7 +35,18 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("url", help="HTTP(S) URL to start crawling")
     parser.add_argument("--output", default="inventory.json", help="JSON output path (default: inventory.json)")
     parser.add_argument("--max-pages", type=_positive_int, default=None, help="Optional emergency page cap")
-    parser.add_argument("--max-depth", type=_non_negative_int, default=None, help="Optional emergency link-depth cap")
+    parser.add_argument(
+        "--depth",
+        "--max-depth",
+        dest="max_depth",
+        type=_non_negative_int,
+        default=None,
+        help=(
+            "Follow links at most N path segments below the start URL "
+            "(e.g. --depth 2 on https://site.com/ covers https://site.com/1/2). "
+            "Default: no limit"
+        ),
+    )
     parser.add_argument("--timeout", type=_positive_int, default=30_000, help="Navigation timeout in milliseconds (default: 30000)")
     return parser
 

@@ -75,11 +75,63 @@ python QASpider-script.py "https://www.helbreathargentina.com/" --output "report
 | Option | Default | Purpose |
 | --- | --- | --- |
 | `--output` | `inventory.json` | Path of the `.json` file to write. |
+| `--depth` | no limit | How many path segments below the start URL to follow. |
 | `--max-pages` | no cap | Emergency page cap. |
-| `--max-depth` | no cap | Emergency link-depth cap. |
 | `--timeout` | `30000` | Navigation timeout in milliseconds. |
 
-Without `--max-pages` and `--max-depth` the crawler **does not stop on its own**: it drains the queue. The caps exist for sites that generate an unwieldy URL space and where you want to bound the run.
+`--max-depth` is accepted as an alias for `--depth`. The report always reports the value under `stats.maxDepth`.
+
+Without `--max-pages` the crawler **does not stop on its own**: it drains the queue. The page cap exists for sites that generate an unwieldy URL space and where you want to bound the run.
+
+---
+
+## Controlling how deep it goes: `--depth`
+
+`--depth N` means: follow links at most **N path segments below the start URL**. Omit it and every in-scope link is followed.
+
+Given the start URL `https://example.com/`:
+
+| Command | Pages inventoried |
+| --- | --- |
+| `--depth 0` | `https://example.com/` |
+| `--depth 1` | `/` and `/1` |
+| `--depth 2` | `/`, `/1`, `/1/2` |
+| `--depth 4` | `/`, `/1`, `/1/2`, `/1/2/3`, `/1/2/3/4` |
+| *(omitted)* | everything reachable within the scope |
+
+```bash
+# First two levels only
+python QASpider-script.py "https://example.com/" --depth 2 --output "shallow.json"
+```
+
+### Depth is counted from the start URL, not from the domain root
+
+With a start URL that already has a path, the segments below **that** path are what count:
+
+```bash
+python QASpider-script.py "https://example.com/demo/" --depth 1
+```
+
+| Depth | Pages inventoried |
+| --- | --- |
+| `0` | `/demo/` |
+| `1` | `/demo/`, `/demo/1` |
+| `2` | `/demo/`, `/demo/1`, `/demo/1/2` |
+
+### How the limit reports itself
+
+`--depth` prunes at the boundary, not across whole subtrees. With `--depth 2` on a chain that continues to `/1/2/3/4`:
+
+| Statistic | Value | Meaning |
+| --- | --- | --- |
+| `pages` | 3 records | `/`, `/1`, `/1/2` were inventoried. |
+| `stats.discovered` | 4 | `/1/2/3` was seen and rejected. |
+| `stats.depthSuppressed` | 1 | Only the boundary counts. `/1/2/3/4` is never discovered, because its parent was never crawled. |
+| `stats.pending` | 0 | Nothing was left queued. |
+| `stats.truncated` | `true` | The depth limit stopped the run. |
+| `stats.complete` | `false` | There is unexplored territory. |
+
+So `depthSuppressed` is a frontier count, not a count of everything below it. If you need to know how much is left, compare `stats.discovered` against the number of `pages` records.
 
 ---
 
@@ -243,7 +295,7 @@ QASpider-script/
 │   ├── inventory.py      # the 66 categories
 │   └── urls.py           # normalization and scope comparison
 ├── tests/
-│   └── test_crawler.py   # 36 tests
+│   └── test_crawler.py   # 44 tests
 ├── requirements.txt
 └── .gitignore
 ```
@@ -254,7 +306,7 @@ QASpider-script/
 python -m unittest discover -s tests
 ```
 
-All 36 tests run against a local server and never touch a public site.
+All 44 tests run against a local server and never touch a public site.
 
 ## Use as a library
 
