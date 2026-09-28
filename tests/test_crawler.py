@@ -326,6 +326,27 @@ class FixtureHandler(BaseHTTPRequestHandler):
             except OSError:
                 return
             return
+        if self.path == "/oversized-chunked-document":
+            # Valid HTTP/1.1 chunked framing with NO Content-Length. This is the
+            # shape that used to dodge the ceiling: the size guard only consulted
+            # the declared header, so the whole body got inventoried anyway.
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Transfer-Encoding", "chunked")
+            self.end_headers()
+            chunk = b"x" * 65_536
+            remaining = OVERSIZED_DOCUMENT_BYTES
+            try:
+                while remaining > 0:
+                    block = chunk[: min(remaining, len(chunk))]
+                    self.wfile.write(b"%x\r\n" % len(block))
+                    self.wfile.write(block)
+                    self.wfile.write(b"\r\n")
+                    remaining -= len(block)
+                self.wfile.write(b"0\r\n\r\n")
+            except OSError:
+                return
+            return
         if self.path == "/media-page":
             body = b"""<!doctype html><html><body><main>
               <h1>Media page</h1>
@@ -1138,6 +1159,21 @@ class CrawlerTests(unittest.TestCase):
         oversized_url = self.start_url.rstrip("/") + "/oversized-document"
 
         result = crawl_site(oversized_url, max_pages=1, max_depth=0, timeout_ms=30_000)
+
+        self.assertEqual(result["pages"], [{
+            "url": oversized_url,
+            "action": "agent-check",
+            "error": "Document exceeded the size limit.",
+        }])
+        self.assertEqual(result["stats"]["failed"], 1)
+        self.assertFalse(result["stats"]["complete"])
+
+    def test_oversized_chunked_document_is_refused_without_a_declared_length(self):
+        # A server that omits Content-Length used to bypass the ceiling
+        # entirely, because the guard only consulted the declared header.
+        oversized_url = self.start_url.rstrip("/") + "/oversized-chunked-document"
+
+        result = crawl_site(oversized_url, max_pages=1, max_depth=0, timeout_ms=60_000)
 
         self.assertEqual(result["pages"], [{
             "url": oversized_url,

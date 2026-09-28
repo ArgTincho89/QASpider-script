@@ -302,6 +302,26 @@ def _fetch_same_origin_response(
                 # is what exhausts the browser on media-heavy pages. Refuse it
                 # here so the page becomes an agent-check record instead.
                 raise _SafeCrawlError("Document exceeded the size limit.")
+            if (
+                declared_length is None
+                and 200 <= response.status < 300
+                and response.headers.get("content-type", "")
+                .split(";")[0]
+                .strip()
+                .lower()
+                .startswith(("text/", "application/xhtml"))
+            ):
+                # A server that omits Content-Length would otherwise dodge the
+                # ceiling, and the oversized body would only fail later as an
+                # opaque browser error. The body is buffered for `route.fulfill`
+                # regardless, so measuring it here costs nothing extra and turns
+                # an incidental crash into a precise, attributable refusal.
+                try:
+                    actual_length = len(response.body())
+                except Exception:
+                    actual_length = None
+                if actual_length is not None and actual_length > MAX_DOCUMENT_BYTES:
+                    raise _SafeCrawlError("Document exceeded the size limit.")
             if 200 <= response.status < 300:
                 page_record.pop("statusCode", None)
             return current_url, response
